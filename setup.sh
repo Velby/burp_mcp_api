@@ -1,124 +1,109 @@
 #!/usr/bin/env bash
-# Burp REST Bridge — setup script
-# Installs the Python MCP server and registers it with Claude Code.
+# Burp REST Bridge — one-shot setup
 # Run from any directory: bash /path/to/setup.sh
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MCP_SCRIPT="$SCRIPT_DIR/burp_mcp.py"
-CLIENT_SCRIPT="$SCRIPT_DIR/burp_client.py"
 
-# ── colours ──────────────────────────────────────────────────────────────────
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
-ok()   { echo -e "${GREEN}✓${NC} $*"; }
-warn() { echo -e "${YELLOW}!${NC} $*"; }
-err()  { echo -e "${RED}✗${NC} $*"; }
-h()    { echo -e "\n${YELLOW}=== $* ===${NC}"; }
+ok()  { echo -e "${GREEN}✓${NC} $*"; }
+warn(){ echo -e "${YELLOW}!${NC} $*"; }
+err() { echo -e "${RED}✗${NC} $*"; }
+h()   { echo -e "\n${YELLOW}=== $* ===${NC}"; }
 
-# ── Python ───────────────────────────────────────────────────────────────────
-h "Checking Python"
+# ── Python ────────────────────────────────────────────────────────────────────
+h "Python"
 if command -v python3 &>/dev/null; then
     PYTHON=python3
 elif command -v python &>/dev/null && python --version 2>&1 | grep -q "Python 3"; then
     PYTHON=python
 else
-    err "Python 3 not found. Install Python 3.8+ and re-run."
-    exit 1
+    err "Python 3 not found — install Python 3.8+ and re-run."; exit 1
 fi
-ok "Using $($PYTHON --version)"
+ok "$($PYTHON --version)"
+
+# ── Build JAR ─────────────────────────────────────────────────────────────────
+h "JAR"
+JAR_SRC="$SCRIPT_DIR/extension/build/libs/burp-rest-bridge.jar"
+JAR_LINK="$SCRIPT_DIR/burp-rest-bridge.jar"
+if [ -f "$JAR_SRC" ]; then
+    ok "Already built"
+else
+    # Find a JDK/JRE: system PATH first, then common snap JBR locations
+    if command -v java &>/dev/null; then
+        JAVA_HOME="$(java -XshowSettings:property -version 2>&1 \
+            | grep 'java.home' | awk '{print $3}')"
+    else
+        for candidate in /snap/*/current/jbr; do
+            if [ -x "$candidate/bin/java" ]; then
+                JAVA_HOME="$candidate"
+                warn "System java not found, using bundled JRE: $JAVA_HOME"
+                break
+            fi
+        done
+    fi
+
+    if [ -z "$JAVA_HOME" ] || [ ! -x "$JAVA_HOME/bin/java" ]; then
+        err "No JDK found — install one and re-run, or build manually:"
+        echo "    sudo apt install default-jdk"
+        echo "    # or: JAVA_HOME=/snap/<app>/current/jbr bash setup.sh"; exit 1
+    fi
+
+    if (cd "$SCRIPT_DIR/extension" && chmod +x gradlew && JAVA_HOME="$JAVA_HOME" ./gradlew jar --quiet); then
+        ok "Built successfully (JAVA_HOME=$JAVA_HOME)"
+    else
+        err "Build failed — fix the error above then re-run, or build manually:"
+        echo "    cd $SCRIPT_DIR/extension && JAVA_HOME=$JAVA_HOME ./gradlew jar"; exit 1
+    fi
+fi
+ln -sf "$JAR_SRC" "$JAR_LINK"
+ok "Symlink: $JAR_LINK"
 
 # ── Python dependencies ───────────────────────────────────────────────────────
-h "Installing Python dependencies"
+h "Python dependencies"
 for pkg in fastmcp requests; do
     if $PYTHON -c "import $pkg" 2>/dev/null; then
         ok "$pkg already installed"
+    elif $PYTHON -m pip install "$pkg" --quiet 2>/dev/null || \
+         $PYTHON -m pip install "$pkg" --user --quiet 2>/dev/null; then
+        ok "$pkg installed"
     else
-        # Try normal install first; fall back to --user on systems with PEP 668 (Debian/Ubuntu)
-        if $PYTHON -m pip install "$pkg" --quiet 2>/dev/null; then
-            ok "$pkg installed"
-        elif $PYTHON -m pip install "$pkg" --user --quiet 2>/dev/null; then
-            ok "$pkg installed (--user)"
-        else
-            err "Could not install $pkg automatically. Run one of:"
-            echo "    $PYTHON -m pip install $pkg --user"
-            echo "    pipx install $pkg"
-            exit 1
-        fi
+        err "Could not install $pkg — run manually:"
+        echo "    $PYTHON -m pip install $pkg --user"; exit 1
     fi
 done
 
-# ── quick smoke test ──────────────────────────────────────────────────────────
-h "Verifying MCP server loads"
-if $PYTHON -c "import sys; sys.path.insert(0, '$SCRIPT_DIR'); import fastmcp; import requests; import burp_client" 2>/dev/null; then
-    ok "burp_mcp.py dependencies look good"
+# ── API key ───────────────────────────────────────────────────────────────────
+h "API key"
+KEY_FILE="$HOME/.config/burp-rest-bridge/api_key"
+mkdir -p "$(dirname "$KEY_FILE")"
+if [ -f "$KEY_FILE" ]; then
+    ok "Already exists: $KEY_FILE"
 else
-    warn "Import check failed — make sure burp_client.py is in the same directory as burp_mcp.py"
+    $PYTHON -c "import secrets; print(secrets.token_hex(32))" > "$KEY_FILE"
+    chmod 600 "$KEY_FILE"
+    ok "Generated: $KEY_FILE"
 fi
 
-# ── Claude Code MCP registration ─────────────────────────────────────────────
-h "Registering MCP server with Claude Code"
-MCP_CMD="$PYTHON $MCP_SCRIPT"
+# ── MCP registration ──────────────────────────────────────────────────────────
+h "MCP registration"
 if command -v claude &>/dev/null; then
-    # Remove old registration if it exists, ignore errors
     claude mcp remove burp 2>/dev/null || true
-    # -s user = available in ALL projects, not just this directory
     claude mcp add -s user burp -- $PYTHON "$MCP_SCRIPT"
-    ok "Registered as 'burp' (user scope) — Claude now has Burp tools in every project"
+    ok "Registered as 'burp' (user scope)"
 else
-    warn "'claude' CLI not found — register manually once it's installed:"
+    warn "'claude' CLI not found — register manually once installed:"
     echo "    claude mcp add -s user burp -- $PYTHON $MCP_SCRIPT"
 fi
 
-# ── JAR location ─────────────────────────────────────────────────────────────
-h "Burp extension JAR"
-JAR="$SCRIPT_DIR/extension/build/libs/burp-rest-bridge.jar"
-if [ -f "$JAR" ]; then
-    ok "JAR found at:"
-    echo "    $JAR"
-else
-    warn "Pre-built JAR not found. Build it with:"
-    echo "    cd $SCRIPT_DIR/extension"
-    echo "    ./gradlew jar   # set JAVA_HOME if needed, e.g. JAVA_HOME=/path/to/jdk ./gradlew jar"
-    echo ""
-    echo "  Or download a release JAR and place it alongside this script."
-    JAR="$SCRIPT_DIR/burp-rest-bridge.jar"
-fi
-
-# ── Final instructions ────────────────────────────────────────────────────────
-h "Load the extension in Burp Suite"
-echo "  This is a manual step — do it once per Burp installation:"
+# ── Done ──────────────────────────────────────────────────────────────────────
+h "All done"
 echo ""
-echo "  1. Open Burp Suite"
-echo "  2. Go to the Extensions tab (top menu bar)"
-echo "  3. Click 'Add' (top-left of the Installed Extensions table)"
-echo "  4. Set Extension type to: Java"
-echo "  5. Click 'Select file' and choose:"
-echo "         $JAR"
-echo "  6. Click Next — you should see 'Burp REST Bridge' appear in the extensions list"
-echo "     with 'Loaded' checked and no errors in the Output tab"
+echo "  Load the extension in Burp Suite (one-time):"
+echo "    Extensions → Add → Java → $JAR_LINK"
+echo "    Ctrl+click 'Loaded' to hot-reload after a rebuild."
 echo ""
-echo "  The extension immediately starts a REST API on http://127.0.0.1:8090"
-echo "  and backfills your existing proxy history."
-echo ""
-echo "  To reload after a JAR rebuild: hold Ctrl (or Cmd on Mac) and click"
-echo "  the 'Loaded' checkbox next to the extension — faster than re-adding it."
-
-h "Test the connection"
-echo "  With Burp running and the extension loaded, run:"
-echo ""
-echo "      $PYTHON $CLIENT_SCRIPT health"
-echo ""
-echo "  Expected output: {\"status\": \"ok\", \"count\": <N>, \"port\": 8090}"
-echo ""
-echo "  Or just ask Claude: 'Is Burp running?' and it will call burp_health() directly."
-
-h "Done — Claude tools available in every project"
-echo "    burp_health          check the extension is running"
-echo "    burp_hosts           list all captured hostnames"
-echo "    burp_search          search proxy history (host, method, status, text, ...)"
-echo "    burp_get_item        fetch full request + response for one item"
-echo "    burp_repeater_latest get the last request sent from Repeater"
-echo "    burp_send_to_repeater send a captured request to a Repeater tab"
-echo "    burp_scope           check if a URL is in Burp's target scope"
+echo "  Verify: $PYTHON $SCRIPT_DIR/burp_client.py health"
 echo ""

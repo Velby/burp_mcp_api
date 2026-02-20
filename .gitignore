@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 extension/build/
+burp-rest-bridge.jar
 extension/.gradle/
 .claude/
 .idea/

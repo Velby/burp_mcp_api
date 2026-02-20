@@ -31,15 +31,26 @@ import sys
 import urllib.request
 import urllib.parse
 import urllib.error
+from pathlib import Path
 from typing import Optional
 
 BASE_URL = "http://127.0.0.1:8090"
+_KEY_FILE = Path.home() / ".config" / "burp-rest-bridge" / "api_key"
+
+
+def _load_api_key() -> str | None:
+    try:
+        key = _KEY_FILE.read_text().strip()
+        return key or None
+    except (FileNotFoundError, PermissionError):
+        return None
 
 
 class BurpClient:
     def __init__(self, base_url: str = BASE_URL, timeout: int = 10):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.api_key = _load_api_key()
 
     # ── core ──────────────────────────────────────────────────────────────────
 
@@ -50,7 +61,10 @@ class BurpClient:
             if filtered:
                 url += "?" + urllib.parse.urlencode(filtered)
         try:
-            with urllib.request.urlopen(url, timeout=self.timeout) as resp:
+            req = urllib.request.Request(url)
+            if self.api_key:
+                req.add_header("X-API-Key", self.api_key)
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 body = resp.read().decode("utf-8", errors="replace")
                 ct = resp.headers.get("Content-Type", "")
                 if "text/plain" in ct:
@@ -69,6 +83,8 @@ class BurpClient:
         data = json.dumps(body).encode()
         req = urllib.request.Request(url, data=data,
                                      headers={"Content-Type": "application/json"})
+        if self.api_key:
+            req.add_header("X-API-Key", self.api_key)
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 return json.loads(resp.read().decode())

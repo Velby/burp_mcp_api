@@ -16,6 +16,7 @@ public class MiniHttpServer {
             String method,
             String path,           // URL-decoded path, e.g. /proxy/history/42
             Map<String, String> params,  // URL-decoded query params
+            Map<String, String> headers, // lower-cased request headers
             byte[] body
     ) {}
 
@@ -30,6 +31,10 @@ public class MiniHttpServer {
     private ExecutorService executor;
     private volatile boolean running;
     private final List<Route> routes = new ArrayList<>();
+    private volatile String apiKey = null;
+
+    /** If set, every request must carry X-API-Key: <key> or receive a 401. */
+    public void setApiKey(String key) { this.apiKey = key; }
 
     public MiniHttpServer(int port) {
         this.port = port;
@@ -123,10 +128,14 @@ public class MiniHttpServer {
             } catch (NumberFormatException ignored) {}
         }
 
-        return new Request(method, path, parseQuery(rawQuery), body);
+        return new Request(method, path, parseQuery(rawQuery), headers, body);
     }
 
     private Response dispatch(Request req) {
+        // Fail closed: deny if key is not configured or doesn't match
+        if (apiKey == null || !apiKey.equals(req.headers().get("x-api-key"))) {
+            return new Response(401, "{\"error\":\"Unauthorized\"}");
+        }
         for (Route route : routes) {
             if (req.path().equals(route.prefix()) ||
                     req.path().startsWith(route.prefix() + "/")) {
@@ -145,6 +154,7 @@ public class MiniHttpServer {
         String statusText = switch (resp.status()) {
             case 200 -> "OK";
             case 400 -> "Bad Request";
+            case 401 -> "Unauthorized";
             case 404 -> "Not Found";
             case 405 -> "Method Not Allowed";
             default  -> "Internal Server Error";

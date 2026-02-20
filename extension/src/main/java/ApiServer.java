@@ -30,6 +30,22 @@ public class ApiServer {
         server.addRoute("/proxy/hosts",   req -> handleHosts(req));
         server.addRoute("/repeater",      req -> handleRepeater(req));
         server.addRoute("/scope",         req -> handleScope(req));
+
+        // Load API key from ~/.config/burp-rest-bridge/api_key if present
+        java.nio.file.Path keyFile = java.nio.file.Paths.get(
+                System.getProperty("user.home"), ".config", "burp-rest-bridge", "api_key");
+        try {
+            String key = new String(java.nio.file.Files.readAllBytes(keyFile),
+                    StandardCharsets.UTF_8).trim();
+            if (key.isEmpty()) throw new IOException("API key file is empty");
+            server.setApiKey(key);
+            api.logging().logToOutput("Burp REST Bridge: API key auth enabled");
+        } catch (IOException e) {
+            // No key file = fail closed: every request returns 401
+            api.logging().logToError(
+                    "Burp REST Bridge: no API key at " + keyFile + " — all requests will return 401. Run setup.sh to generate one.");
+        }
+
         try {
             server.start();
         } catch (IOException e) {
