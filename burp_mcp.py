@@ -23,9 +23,10 @@ mcp = FastMCP(
     instructions=(
         "Tools for interacting with Burp Suite proxy history and Repeater. "
         "Call burp_health first to confirm the extension is running. "
-        "Use burp_search to find requests, burp_get_item (or burp_get_items for batch) "
-        "to read full structured content, and burp_repeater_latest when the user says "
-        "'check what I just sent'. "
+        "Use burp_search to find requests (returns {items, returned, has_more}), "
+        "burp_get_items([ids]) to read full structured content, "
+        "burp_extract to extract regex matches from traffic items, "
+        "and burp_repeater_latest when the user says 'check what I just sent'. "
         "For large responses, use dump_response_body=True to write to /tmp and process "
         "with bash tools (grep, jq) instead of reading inline."
     ),
@@ -261,8 +262,306 @@ def burp_hosts() -> list:
     return _safe(_client.hosts)
 
 
+def _fetch_all_for_condition(
+    search: str, search_in: str,
+    host, method, status, tool, ext_exclude, mime, mcp_only,
+    include_req_body: bool = False,
+    include_resp_body: bool = False,
+) -> list | dict:
+    """
+    Paginate through ALL items matching a condition (no limit cap).
+    Returns a list of metadata dicts, or an error dict on failure.
+    Used for search_and intersection.
+    """
+    base_fields = "id,tool,timestamp,url,method,status_code,mcp_tag"
+    extra = []
+    if include_req_body:
+        extra.append("request_text")
+    if include_resp_body:
+        extra.append("response_text")
+    fields = base_fields + ("," + ",".join(extra) if extra else "")
+
+    all_items = []
+    offset = 0
+    batch = 1000
+    while True:
+        page = _safe(lambda o=offset: _client.history(
+            search=search, search_in=search_in,
+            host=host, method=method, status=status, tool=tool,
+            ext_exclude=ext_exclude, mime=mime, mcp_only=mcp_only,
+            limit=batch, offset=o,
+            fields=fields,
+            max_body=300 if extra else 0,
+        ))
+        if not isinstance(page, list):
+            return page  # propagate error
+        all_items.extend(page)
+        if len(page) < batch:
+            break
+        offset += batch
+    return all_items
+
+
 @mcp.tool()
 def burp_search(
+    host: str = None,
+    method: str = None,
+    status: str = None,
+    search: str = None,
+    search_in: str = None,
+    search_and: list = None,
+    tool: str = None,
+    ext_exclude: str = _DEFAULT_EXT_EXCLUDE,
+    mime: str = None,
+    order: str = None,
+    limit: int = 20,
+    offset: int = 0,
+    mcp_only: bool = False,
+    include_request_body: bool = False,
+    include_response_body: bool = False,
+) -> dict:
+    """
+    Search Burp proxy/repeater history.
+    Returns {items: [...], total: N, returned: N, has_more: bool}.
+    Each item has: id, tool, timestamp, url, method, status_code.
+    Use burp_get_items([ids]) to fetch full structured content for items of interest.
+
+    Body fields are never included by default. They appear only when explicitly requested
+    or when search_in targets a body part — in which case inclusion is automatic so you
+    can see what matched. When search is also set, the body field is a ±200 char snippet
+    centered on the match; otherwise it is the first 300 chars.
+
+    Parameters:
+        host:        Hostname substring filter, e.g. "api.example.com"
+        method:      Exact HTTP method: GET, POST, PUT, DELETE, ...
+        status:      Status prefix: "200", "4" (all 4xx), "401"
+        search:      Case-insensitive text to search for (single term)
+        search_in:   Comma-separated parts to search within (used with 'search'):
+                     url, request, request_headers, request_body,
+                     response, response_headers, response_body
+                     (default: search everywhere including url/host/path)
+        search_and:  AND search — list of {search, search_in} conditions that ALL must match.
+                     E.g. [{"search": "language", "search_in": "url"},
+                            {"search": "russia", "search_in": "request_headers"}]
+                     All base filters (host, method, status, etc.) still apply.
+                     Cannot be combined with 'search'/'search_in'.
+                     Fetches all matching IDs per condition and intersects in Python.
+                     Returns total count of all matches (not just this page).
+        tool:        PROXY | REPEATER | SCANNER | INTRUDER | EXTENSION
+        ext_exclude: Comma-separated URL extensions to exclude (default: common static files)
+                     Pass "" to include everything including js/css/images
+        mime:        Filter by *response* Content-Type substring: "json", "html", "xml", "image"
+                     Note: to also see image URLs pass ext_exclude="" (jpg/jpeg excluded by default)
+        order:       "asc" = oldest first (useful for finding first occurrence); default newest first
+        limit:       Max results (default 20)
+        offset:      Pagination offset. If has_more=true, fetch again with offset+=limit
+        mcp_only:    If True, only return requests sent via MCP tools (burp_repeat/burp_request).
+                     These items are highlighted cyan in Burp's UI and carry an mcp_tag field.
+        include_request_body:  Add request_body to each result (off by default).
+                     Auto-enabled when search_in contains "request_body" or "request".
+                     With search_and: first 300 chars included (no match-centering).
+        include_response_body: Add response_body to each result (off by default).
+                     Auto-enabled when search_in contains "response_body" or "response".
+                     With search_and: first 300 chars included (no match-centering).
+    """
+    ext = ext_exclude if ext_exclude else None
+
+    # ── AND search: Python-side intersection ──────────────────────────────────
+    if search_and:
+        search_parts = {p.strip() for p in search_in.split(",")} if search_in else set()
+        want_req_body = include_request_body or "request_body" in search_parts or "request" in search_parts
+        want_resp_body = include_response_body or "response_body" in search_parts or "response" in search_parts
+
+        id_to_item: dict | None = None
+        for cond in search_and:
+            items = _fetch_all_for_condition(
+                search=cond.get("search", ""),
+                search_in=cond.get("search_in"),
+                host=host, method=method, status=status, tool=tool,
+                ext_exclude=ext, mime=mime, mcp_only=mcp_only,
+                include_req_body=want_req_body,
+                include_resp_body=want_resp_body,
+            )
+            if not isinstance(items, list):
+                return items  # propagate error
+            this_map = {i["id"]: i for i in items}
+            # First condition seeds the map; subsequent conditions narrow it.
+            # We keep items from this_map so that body text (if fetched) is
+            # preserved — all conditions return the same body for a given ID.
+            id_to_item = this_map if id_to_item is None else {
+                k: this_map[k] for k in id_to_item if k in this_map
+            }
+
+        all_matched = sorted(
+            (id_to_item or {}).values(),
+            key=lambda x: x.get("timestamp", ""),
+            reverse=(order != "asc"),
+        )
+
+        # Extract body snippets from the raw text fields fetched during condition passes
+        for item in all_matched:
+            if want_req_body:
+                rt = item.pop("request_text", None)
+                if rt is not None:
+                    body = _extract_request_body(rt)
+                    item["request_body"] = body[:300] if len(body) > 300 else body
+            if want_resp_body:
+                resp_text = item.pop("response_text", None)
+                if resp_text is not None:
+                    _, body = _split_headers_body(resp_text)
+                    body = body.strip()
+                    item["response_body"] = body[:300] if len(body) > 300 else body
+
+        total = len(all_matched)
+        page = all_matched[offset: offset + limit]
+        return {
+            "items": page,
+            "total": total,
+            "returned": len(page),
+            "has_more": offset + len(page) < total,
+        }
+
+    # ── Normal single-term search ─────────────────────────────────────────────
+    # Determine which body sides to include based on search_in and explicit flags
+    search_parts = {p.strip() for p in search_in.split(",")} if search_in else set()
+    want_req_body = include_request_body or "request_body" in search_parts or "request" in search_parts
+    want_resp_body = include_response_body or "response_body" in search_parts or "response" in search_parts
+
+    # Fetch the page
+    if not (want_req_body or want_resp_body):
+        result = _safe(lambda: _client.history(
+            host=host, method=method, status=status,
+            search=search, search_in=search_in, tool=tool,
+            ext_exclude=ext, mime=mime, order=order,
+            limit=limit, offset=offset, mcp_only=mcp_only,
+        ))
+    else:
+        extra_fields = []
+        if want_req_body:
+            extra_fields.append("request_text")
+        if want_resp_body:
+            extra_fields.append("response_text")
+        fields = "id,tool,timestamp,url,method,status_code,mcp_tag," + ",".join(extra_fields)
+
+        result = _safe(lambda: _client.history(
+            host=host, method=method, status=status,
+            search=search, search_in=search_in, tool=tool,
+            ext_exclude=ext, mime=mime, order=order,
+            limit=limit, offset=offset, mcp_only=mcp_only,
+            fields=fields, max_body=0,
+        ))
+
+    if not isinstance(result, list):
+        return result  # propagate error dict
+
+    # Apply body snippets
+    for item in result:
+        if want_req_body:
+            rt = item.pop("request_text", None)
+            if rt is not None:
+                body = _extract_request_body(rt)
+                item["request_body"] = _centered_snippet(body, search) if (search and body) else (body[:300] if len(body) > 300 else body)
+        if want_resp_body:
+            resp_text = item.pop("response_text", None)
+            if resp_text is not None:
+                _, body = _split_headers_body(resp_text)
+                body = body.strip()
+                item["response_body"] = _centered_snippet(body, search) if (search and body) else (body[:300] if len(body) > 300 else body)
+
+    # Fetch total count (same filters, separate lightweight call)
+    total = _safe(lambda: _client.history_count(
+        host=host, method=method, status=status,
+        search=search, search_in=search_in, tool=tool,
+        ext_exclude=ext, mime=mime, mcp_only=mcp_only,
+    ))
+    if isinstance(total, dict):
+        total = None  # don't fail search just because count errored
+
+    return {
+        "items": result,
+        "total": total,
+        "returned": len(result),
+        "has_more": (offset + len(result) < total) if total is not None else (len(result) == limit),
+    }
+
+
+_EXTRACT_VALID_PARTS = frozenset({
+    "url", "request", "request_headers", "request_body",
+    "response", "response_headers", "response_body",
+})
+
+
+def _get_text_for_part(item: dict, part: str) -> str:
+    """Return the raw text to match against for a given extract_in part name."""
+    if part == "url":
+        return item.get("url", "")
+    req_text = item.get("request_text", "")
+    resp_text = item.get("response_text", "")
+    if part == "request":
+        return req_text
+    elif part == "request_headers":
+        h, _ = _split_headers_body(req_text)
+        return h
+    elif part == "request_body":
+        return _extract_request_body(req_text)
+    elif part == "response":
+        return resp_text
+    elif part == "response_headers":
+        h, _ = _split_headers_body(resp_text)
+        return h
+    elif part == "response_body":
+        _, b = _split_headers_body(resp_text)
+        return b.strip()
+    return ""
+
+
+def _compile_regex(pattern: str, flags_str: str) -> "re.Pattern | str":
+    """Compile regex with flag chars i/m/s. Returns Pattern or an error string."""
+    flag_val = 0
+    for ch in (flags_str or "").lower():
+        if ch == 'i':
+            flag_val |= re.IGNORECASE
+        elif ch == 'm':
+            flag_val |= re.MULTILINE
+        elif ch == 's':
+            flag_val |= re.DOTALL
+    try:
+        return re.compile(pattern, flag_val)
+    except re.error as e:
+        return str(e)
+
+
+def _apply_regex_extract(text: str, compiled: "re.Pattern", all_matches: bool) -> "list | None":
+    """
+    Apply compiled regex to text.
+    Returns None if no match, else:
+      - no groups    → ["match", ...]
+      - named groups → [{"name": "val", ...}, ...]
+      - unnamed groups → [["g1", "g2", ...], ...]
+    """
+    if not text:
+        return None
+    has_named = bool(compiled.groupindex)
+    has_groups = compiled.groups > 0
+    if all_matches:
+        matches = list(compiled.finditer(text))
+    else:
+        m = compiled.search(text)
+        matches = [m] if m else []
+    if not matches:
+        return None
+    if has_named:
+        return [m.groupdict() for m in matches]
+    elif has_groups:
+        return [list(m.groups()) for m in matches]
+    else:
+        return [m.group(0) for m in matches]
+
+
+@mcp.tool()
+def burp_extract(
+    pattern: str,
+    extract_in: str,
     host: str = None,
     method: str = None,
     status: str = None,
@@ -275,89 +574,119 @@ def burp_search(
     limit: int = 20,
     offset: int = 0,
     mcp_only: bool = False,
-    include_request_body: bool = False,
-    include_response_body: bool = False,
-) -> list:
+    all_matches: bool = True,
+    flags: str = "i",
+) -> dict:
     """
-    Search Burp proxy/repeater history. Returns id, tool, timestamp, url, method, status_code.
-    Use burp_get_item(id) or burp_get_items([ids]) to fetch full structured content.
+    Extract regex matches from HTTP traffic items.
 
-    Body fields are never included by default. They appear only when explicitly requested
-    or when search_in targets a body part — in which case inclusion is automatic so you
-    can see what matched. When search is also set, the body field is a ±200 char snippet
-    centered on the match; otherwise it is the first 500 chars.
+    Scans captured traffic and returns only items where the pattern matches,
+    each with an 'extracted' field containing the match results keyed by part name.
+
+    extracted format depends on the pattern's capture groups:
+      - No groups:     {"response_body": ["match1", "match2"]}
+      - Named groups:  {"response_body": [{"email": "a@b.com", "name": "Alice"}, ...]}
+      - Unnamed groups:{"response_body": [["Alice", "a@b.com"], ...]}
 
     Parameters:
-        host:        Hostname substring filter, e.g. "api.example.com"
+        pattern:    Python regex pattern (re module syntax).
+        extract_in: Comma-separated parts to apply the pattern to:
+                    url, request, request_headers, request_body,
+                    response, response_headers, response_body
+                    Matches from each matching part are returned separately.
+                    Use "response_body" for API data extraction.
+        flags:      Regex flags: i=IGNORECASE (default), m=MULTILINE, s=DOTALL.
+                    Combine: flags="is" for case-insensitive + span newlines.
+        all_matches: Return all non-overlapping matches per item (default True).
+                     Set False to return only the first match per item.
+        host:        Hostname substring filter (pre-filter applied server-side)
         method:      Exact HTTP method: GET, POST, PUT, DELETE, ...
         status:      Status prefix: "200", "4" (all 4xx), "401"
-        search:      Case-insensitive text to search for
-        search_in:   Comma-separated parts to search within:
-                     request, request_headers, request_body,
-                     response, response_headers, response_body
-                     (default: search everywhere)
+        search:      Case-insensitive text pre-filter (applied server-side before regex)
+        search_in:   Limit pre-filter to specific parts (comma-separated)
         tool:        PROXY | REPEATER | SCANNER | INTRUDER | EXTENSION
-        ext_exclude: Comma-separated URL extensions to exclude (default: common static files)
-                     Pass "" to include everything including js/css/images
+        ext_exclude: URL extensions to exclude (default: common static files). Pass "" for all.
         mime:        Filter by response Content-Type substring: "json", "html", "xml"
-        order:       "asc" = oldest first (useful for finding first occurrence); default newest first
-        limit:       Max results (default 20)
-        offset:      Pagination offset
-        mcp_only:    If True, only return requests sent via MCP tools (burp_repeat/burp_request).
-                     These items are highlighted cyan in Burp's UI and carry an mcp_tag field.
-        include_request_body:  Add request_body to each result (off by default).
-                     Auto-enabled when search_in contains "request_body" or "request".
-        include_response_body: Add response_body to each result (off by default).
-                     Auto-enabled when search_in contains "response_body" or "response".
-    """
-    # Determine which body sides to include based on search_in and explicit flags
-    search_parts = {p.strip() for p in search_in.split(",")} if search_in else set()
-    want_req_body = include_request_body or "request_body" in search_parts or "request" in search_parts
-    want_resp_body = include_response_body or "response_body" in search_parts or "response" in search_parts
+        order:       "asc" = oldest first; default newest first
+        limit:       Max items to return (default 20)
+        offset:      Pagination offset. Use with has_more=true.
+        mcp_only:    Only return items sent by MCP tools (burp_repeat/burp_request)
 
-    if not (want_req_body or want_resp_body):
-        return _safe(lambda: _client.history(
+    Tips:
+        - Use search= as a pre-filter to narrow candidates before regex is applied.
+          E.g. search="token" with pattern=r'"token"\\s*:\\s*"([^"]+)"'
+        - For multi-line matches (e.g. JSON blocks), set flags="is" (IGNORECASE + DOTALL).
+        - Named groups give cleaner output: r'(?P<email>[\\w.]+@[\\w.]+)'
+    """
+    compiled = _compile_regex(pattern, flags)
+    if isinstance(compiled, str):
+        return {"error": f"invalid regex: {compiled}"}
+
+    parts = [p.strip() for p in extract_in.split(",") if p.strip()]
+    if not parts:
+        return {"error": "extract_in must specify at least one part"}
+    invalid = [p for p in parts if p not in _EXTRACT_VALID_PARTS]
+    if invalid:
+        return {"error": f"unknown extract_in parts: {invalid}. Valid: {sorted(_EXTRACT_VALID_PARTS)}"}
+
+    need_request = any(p in {"request", "request_headers", "request_body"} for p in parts)
+    need_response = any(p in {"response", "response_headers", "response_body"} for p in parts)
+    ext = ext_exclude if ext_exclude else None
+
+    base_fields = "id,tool,timestamp,url,method,status_code,mcp_tag"
+    if need_request or need_response:
+        extra = []
+        if need_request:
+            extra.append("request_text")
+        if need_response:
+            extra.append("response_text")
+        fields = base_fields + "," + ",".join(extra)
+    else:
+        fields = base_fields  # url-only: no text fields needed
+
+    batch_size = 500
+    scan_offset = 0
+    matched_items = []
+    target_end = offset + limit  # need at least this many to fill the requested page
+
+    while True:
+        batch = _safe(lambda o=scan_offset: _client.history(
             host=host, method=method, status=status,
             search=search, search_in=search_in, tool=tool,
-            ext_exclude=ext_exclude if ext_exclude else None,
-            mime=mime, order=order,
-            limit=limit, offset=offset,
-            mcp_only=mcp_only,
+            ext_exclude=ext, mime=mime, order=order,
+            limit=batch_size, offset=o, mcp_only=mcp_only,
+            fields=fields, max_body=0,
         ))
+        if not isinstance(batch, list):
+            return batch  # propagate error
 
-    # Build fields list for only the sides we need
-    extra_fields = []
-    if want_req_body:
-        extra_fields.append("request_text")
-    if want_resp_body:
-        extra_fields.append("response_text")
-    fields = "id,tool,timestamp,url,method,status_code,mcp_tag," + ",".join(extra_fields)
+        for item in batch:
+            item_extracted = {}
+            for part in parts:
+                text = _get_text_for_part(item, part)
+                matches = _apply_regex_extract(text, compiled, all_matches)
+                if matches is not None:
+                    item_extracted[part] = matches
 
-    result = _safe(lambda: _client.history(
-        host=host, method=method, status=status,
-        search=search, search_in=search_in, tool=tool,
-        ext_exclude=ext_exclude if ext_exclude else None,
-        mime=mime, order=order,
-        limit=limit, offset=offset,
-        mcp_only=mcp_only,
-        fields=fields,
-        max_body=0,  # fetch full body so we can center the snippet on the match
-    ))
+            if item_extracted:
+                item.pop("request_text", None)
+                item.pop("response_text", None)
+                item["extracted"] = item_extracted
+                matched_items.append(item)
 
-    if isinstance(result, list):
-        for item in result:
-            if want_req_body:
-                rt = item.pop("request_text", None)
-                if rt is not None:
-                    body = _extract_request_body(rt)
-                    item["request_body"] = _centered_snippet(body, search) if (search and body) else (body[:500] if len(body) > 500 else body)
-            if want_resp_body:
-                resp_text = item.pop("response_text", None)
-                if resp_text is not None:
-                    _, body = _split_headers_body(resp_text)
-                    body = body.strip()
-                    item["response_body"] = _centered_snippet(body, search) if (search and body) else (body[:500] if len(body) > 500 else body)
-    return result
+            if len(matched_items) > target_end:
+                break  # +1 past target is enough to set has_more=True
+
+        if len(matched_items) > target_end or len(batch) < batch_size:
+            break
+        scan_offset += batch_size
+
+    page = matched_items[offset: offset + limit]
+    return {
+        "items": page,
+        "returned": len(page),
+        "has_more": len(matched_items) > offset + limit,
+    }
 
 
 @mcp.tool()
@@ -388,10 +717,12 @@ def burp_get_items(
                Ideal for large JSON responses where you only need one key or nested object.
 
     Parameters:
-        item_ids:           List of IDs from burp_search results (recommended: up to 20)
+        item_ids:           List of IDs from burp_search results. No hard limit, but fetching
+                            large batches (50+) may overwhelm context — prefer 10-20 at a time.
         max_body:           Truncate response body to N chars per item (0 = unlimited)
         dump_response_body: Always dump response bodies to /tmp regardless of size
-        json_path:          Extract a sub-object from each JSON response body
+        json_path:          Extract a sub-object from each JSON response body.
+                            Dot notation: "data.users", array index: "results.0.token"
     """
     results = []
     for item_id in item_ids:

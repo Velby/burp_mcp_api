@@ -33,6 +33,7 @@ step-by-step instructions for building the JAR and loading it in Burp Suite.
 | `burp_health` | Check the extension is running |
 | `burp_hosts` | List all captured hostnames |
 | `burp_search` | Search history by host, method, status, text, MIME type, tool, ... Optionally include body snippets centered on the match. |
+| `burp_extract` | Extract regex matches from traffic items. Specify `extract_in` (url, request_headers, request_body, response_headers, response_body) and a Python regex pattern. Returns only items with matches; groups control output format (no groups=full match, named=dict, unnamed=list). |
 | `burp_get_items` | Fetch structured request + response for one or more items. Large bodies are auto-dumped to `/tmp` with a preview. Use `json_path` to extract a sub-object from JSON responses without loading the full body. |
 | `burp_summarize_host` | Summarize the API surface for a host — unique endpoints (path-normalized, query-stripped), status distribution, auth schemes, content types. Paginates smartly so high-volume endpoints don't crowd out rarer ones. |
 | `burp_repeater_latest` | Get the last request sent from Repeater |

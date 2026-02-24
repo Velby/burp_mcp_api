@@ -139,6 +139,7 @@ public class TrafficItem {
 
     private boolean matchesPart(String needle, String part) {
         return switch (part) {
+            case "url"              -> url().toLowerCase(Locale.ROOT).contains(needle);
             case "request"          -> containsBytes(requestBytes, needle, false);
             case "request_headers"  -> containsBytesHeaders(requestBytes, needle);
             case "request_body"     -> containsBytesBody(requestBytes, needle, false);
@@ -254,6 +255,8 @@ public class TrafficItem {
      * Decode raw HTTP message bytes to a human-readable string.
      * Splits on the header/body separator; maxBody truncates the body portion only
      * (headers are always returned in full). For responses, decompresses gzip bodies.
+     * Binary response bodies (image/*, audio/*, video/*, octet-stream, etc.) are replaced
+     * with a placeholder to avoid embedding binary garbage in JSON.
      * maxBody=0 means unlimited.
      */
     public static String decodeForDisplay(byte[] raw, int maxBody, boolean tryGzip) {
@@ -273,6 +276,15 @@ public class TrafficItem {
                 ? Arrays.copyOfRange(raw, bodyStart, raw.length)
                 : new byte[0];
 
+        // For responses, substitute a placeholder for binary MIME types
+        if (tryGzip) {
+            String ct = extractContentType(headers);
+            if (isBinaryMimeType(ct)) {
+                String mimeLabel = ct.contains(";") ? ct.substring(0, ct.indexOf(';')).trim() : ct;
+                return headers + "\r\n\r\n[binary body: " + mimeLabel + ", " + bodyBytes.length + " bytes]";
+            }
+        }
+
         // Gzip decompression for responses
         if (tryGzip && headers.toLowerCase(Locale.ROOT).contains("content-encoding: gzip")) {
             try { bodyBytes = new GZIPInputStream(new ByteArrayInputStream(bodyBytes)).readAllBytes(); }
@@ -284,6 +296,23 @@ public class TrafficItem {
                 : new String(bodyBytes, StandardCharsets.ISO_8859_1);
 
         return headers + "\r\n\r\n" + truncateBody(bodyStr, maxBody);
+    }
+
+    private static String extractContentType(String headers) {
+        for (String line : headers.split("\r?\n")) {
+            if (line.toLowerCase(Locale.ROOT).startsWith("content-type:")) {
+                return line.substring("content-type:".length()).trim().toLowerCase(Locale.ROOT);
+            }
+        }
+        return "";
+    }
+
+    private static boolean isBinaryMimeType(String ct) {
+        return ct.startsWith("image/") || ct.startsWith("audio/") || ct.startsWith("video/")
+                || ct.startsWith("font/") || ct.startsWith("application/octet-stream")
+                || ct.startsWith("application/pdf") || ct.startsWith("application/zip")
+                || ct.startsWith("application/gzip") || ct.startsWith("application/x-gzip")
+                || ct.startsWith("application/vnd.ms-") || ct.startsWith("application/vnd.openxmlformats");
     }
 
     private static String truncateBody(String body, int maxBody) {
@@ -340,11 +369,17 @@ public class TrafficItem {
 
     public static String escapeJson(String s) {
         if (s == null) return "";
-        return s.replace("\\", "\\\\")
-                .replace("\"", "\\\"")
-                .replace("\n", "\\n")
-                .replace("\r", "\\r")
-                .replace("\t", "\\t")
-                .replace("\u0000", "");
+        StringBuilder sb = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if      (c == '\\') sb.append("\\\\");
+            else if (c == '"')  sb.append("\\\"");
+            else if (c == '\n') sb.append("\\n");
+            else if (c == '\r') sb.append("\\r");
+            else if (c == '\t') sb.append("\\t");
+            else if (c < 0x20 || c == 0x7F) sb.append(String.format("\\u%04x", (int) c));
+            else sb.append(c);
+        }
+        return sb.toString();
     }
 }

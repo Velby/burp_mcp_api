@@ -95,16 +95,17 @@ GET /proxy/history
     status=<prefix>          "401", "4" (all 4xx), "20" (200-209)
     search=<text>            case-insensitive substring search
     search_in=<parts>        limit search to specific parts (comma-separated):
-                               request, request_headers, request_body,
+                               url, request, request_headers, request_body,
                                response, response_headers, response_body
-                             (default: search everywhere)
+                             (default: search everywhere including url/host/path)
     ext_exclude=<csv>        exclude by URL extension: js,css,png,gif,ico,woff2,svg,ttf
-    mime=<substring>         filter by response Content-Type: "json", "html", "xml"
+    mime=<substring>         filter by *response* Content-Type: "json", "html", "xml", "image"
     tool=PROXY|REPEATER|SCANNER|INTRUDER|EXTENSION
     mcp=true                 only return requests sent via MCP tools (burp_repeat/burp_request)
     order=asc                oldest first (default: newest first)
     limit=100                max results
     offset=0                 pagination
+    count_only=true          return {"count": N} only — fast total without fetching items
 
   Output params (use with fields=):
     fields=<csv>             comma-separated fields to include (overrides defaults)
@@ -312,7 +313,7 @@ FIELDS REFERENCE
         return item.toJsonDetail(maxBody);
     }
 
-    /** Run a search and serialise results as a JSON array. */
+    /** Run a search and serialise results as a JSON array (or count if count_only=true). */
     private String searchToJson(Map<String, String> params, String forceTool) {
         String host       = params.get("host");
         String method     = params.get("method");
@@ -323,11 +324,19 @@ FIELDS REFERENCE
         String extExclude = params.get("ext_exclude");
         String mime       = params.get("mime");
         String order      = params.get("order");
-        boolean mcpOnly = "true".equalsIgnoreCase(params.get("mcp"));
+        boolean mcpOnly   = "true".equalsIgnoreCase(params.get("mcp"));
+        boolean countOnly = "true".equalsIgnoreCase(params.get("count_only"));
         int limit         = parseIntOr(params.get("limit"), 100);
         int offset        = parseIntOr(params.get("offset"), 0);
         int maxBody       = parseIntOr(params.get("max_body"), 0);
         Set<String> fields = parseFields(params.get("fields"));
+
+        // count_only=true: return just the total match count, no items
+        if (countOnly) {
+            int count = store.searchCount(host, method, status, search, searchIn, tool,
+                    extExclude, mime, mcpOnly);
+            return "{\"count\":" + count + "}";
+        }
 
         List<TrafficItem> results = store.search(
                 host, method, status, search, searchIn, tool,

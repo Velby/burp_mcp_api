@@ -158,6 +158,30 @@ class BurpClient:
             "mcp": "true" if mcp_only else None,
         })
 
+    def history_count(
+        self,
+        host: Optional[str] = None,
+        method: Optional[str] = None,
+        status: Optional[str] = None,
+        search: Optional[str] = None,
+        search_in: Optional[str] = None,
+        tool: Optional[str] = None,
+        ext_exclude: Optional[str] = None,
+        mime: Optional[str] = None,
+        mcp_only: bool = False,
+    ) -> int:
+        """Return the total count of items matching the given filters (no pagination)."""
+        result = self._get("/proxy/history", {
+            "host": host, "method": method, "status": status,
+            "search": search, "search_in": search_in, "tool": tool,
+            "ext_exclude": ext_exclude, "mime": mime,
+            "mcp": "true" if mcp_only else None,
+            "count_only": "true",
+        })
+        if isinstance(result, dict):
+            return result.get("count", 0)
+        return 0
+
     def get(self, item_id: int, max_body: int = 1000) -> dict:
         """
         Get full detail for a single traffic item.

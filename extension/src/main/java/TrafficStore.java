@@ -98,6 +98,37 @@ public class TrafficStore {
                 .collect(Collectors.toList());
     }
 
+    /**
+     * Count traffic items matching the given filters (same semantics as search,
+     * but no skip/limit/order — returns a total count).
+     */
+    public int searchCount(String host, String method, String statusStr,
+                           String search, String searchIn, String tool,
+                           String extExclude, String mimeInclude, boolean mcpOnly) {
+        Set<String> searchInParts = parseCsvSet(searchIn);
+        Set<String> extExcludeSet = parseCsvSetLower(extExclude);
+        String mimeFilter = mimeInclude != null && !mimeInclude.isEmpty()
+                ? mimeInclude.toLowerCase(Locale.ROOT) : null;
+
+        List<TrafficItem> snapshot;
+        synchronized (items) {
+            snapshot = new ArrayList<>(items);
+        }
+
+        return (int) snapshot.stream()
+                .filter(i -> !mcpOnly         || i.mcpTag != null)
+                .filter(i -> isBlank(host)       || i.host.toLowerCase(Locale.ROOT).contains(host.toLowerCase(Locale.ROOT)))
+                .filter(i -> isBlank(method)     || method.equalsIgnoreCase(i.method))
+                .filter(i -> isBlank(statusStr)  || matchesStatus(i.statusCode, statusStr))
+                .filter(i -> isBlank(tool)       || tool.equalsIgnoreCase(i.tool))
+                .filter(i -> extExcludeSet.isEmpty() || !extExcludeSet.contains(i.getUrlExtension()))
+                .filter(i -> mimeFilter == null  || i.getContentType().contains(mimeFilter))
+                .filter(i -> isBlank(search)     || (searchInParts.isEmpty()
+                        ? containsSearchAll(i, search)
+                        : i.containsSearchIn(search, searchInParts)))
+                .count();
+    }
+
     /** Return the most recent item matching the given tool, or null. */
     public TrafficItem getLatestByTool(String tool) {
         synchronized (items) {
