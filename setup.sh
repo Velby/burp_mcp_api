@@ -28,35 +28,38 @@ ok "$($PYTHON --version)"
 h "JAR"
 JAR_SRC="$SCRIPT_DIR/extension/build/libs/burp-rest-bridge.jar"
 JAR_LINK="$SCRIPT_DIR/burp-rest-bridge.jar"
-if [ -f "$JAR_SRC" ]; then
-    ok "Already built"
+
+# Find a JDK: system PATH first, then Burp's bundled JRE, then snap JBRs
+if command -v javac &>/dev/null; then
+    JAVA_HOME="$(java -XshowSettings:property -version 2>&1 \
+        | grep 'java.home' | awk '{print $3}')"
 else
-    # Find a JDK/JRE: system PATH first, then common snap JBR locations
-    if command -v java &>/dev/null; then
-        JAVA_HOME="$(java -XshowSettings:property -version 2>&1 \
-            | grep 'java.home' | awk '{print $3}')"
-    else
-        for candidate in /snap/*/current/jbr; do
-            if [ -x "$candidate/bin/java" ]; then
-                JAVA_HOME="$candidate"
-                warn "System java not found, using bundled JRE: $JAVA_HOME"
-                break
-            fi
-        done
-    fi
+    for candidate in \
+        "$HOME/BurpSuitePro/jre" \
+        "$HOME/BurpSuite/jre" \
+        "/opt/BurpSuitePro/jre" \
+        "/opt/BurpSuite/jre" \
+        /snap/*/current/jbr; do
+        if [ -x "$candidate/bin/javac" ]; then
+            JAVA_HOME="$candidate"
+            warn "System javac not found, using bundled JDK: $JAVA_HOME"
+            break
+        fi
+    done
+fi
 
-    if [ -z "$JAVA_HOME" ] || [ ! -x "$JAVA_HOME/bin/java" ]; then
-        err "No JDK found — install one and re-run, or build manually:"
-        echo "    sudo apt install default-jdk"
-        echo "    # or: JAVA_HOME=/snap/<app>/current/jbr bash setup.sh"; exit 1
-    fi
+if [ -z "$JAVA_HOME" ] || [ ! -x "$JAVA_HOME/bin/javac" ]; then
+    err "No JDK found — install one and re-run, or build manually:"
+    echo "    sudo apt install default-jdk"
+    echo "    # or: JAVA_HOME=/snap/<app>/current/jbr bash setup.sh"; exit 1
+fi
 
-    if (cd "$SCRIPT_DIR/extension" && chmod +x gradlew && JAVA_HOME="$JAVA_HOME" ./gradlew jar --quiet); then
-        ok "Built successfully (JAVA_HOME=$JAVA_HOME)"
-    else
-        err "Build failed — fix the error above then re-run, or build manually:"
-        echo "    cd $SCRIPT_DIR/extension && JAVA_HOME=$JAVA_HOME ./gradlew jar"; exit 1
-    fi
+# Always let Gradle decide — it skips compilation when sources are unchanged (UP-TO-DATE)
+if (cd "$SCRIPT_DIR/extension" && chmod +x gradlew && JAVA_HOME="$JAVA_HOME" ./gradlew jar --quiet); then
+    ok "JAR up to date (JAVA_HOME=$JAVA_HOME)"
+else
+    err "Build failed — fix the error above then re-run, or build manually:"
+    echo "    cd $SCRIPT_DIR/extension && JAVA_HOME=$JAVA_HOME ./gradlew jar"; exit 1
 fi
 ln -sf "$JAR_SRC" "$JAR_LINK"
 ok "Symlink: $JAR_LINK"
@@ -96,6 +99,11 @@ if command -v claude &>/dev/null; then
 else
     warn "'claude' CLI not found — register manually once installed:"
     echo "    claude mcp add -s user burp -- $PYTHON $MCP_SCRIPT"
+fi
+
+# Kill any running instance so the next Claude session picks up updated code
+if pkill -f "python.*burp_mcp\.py" 2>/dev/null; then
+    ok "Restarted MCP server (killed old process — will respawn on next use)"
 fi
 
 # ── Done ──────────────────────────────────────────────────────────────────────

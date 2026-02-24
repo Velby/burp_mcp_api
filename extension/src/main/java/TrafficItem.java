@@ -217,6 +217,7 @@ public class TrafficItem {
         if (has.test("response"))         { first = comma(sb, first); appendStr(sb,  "response",         Base64.getEncoder().encodeToString(responseBytes)); }
         if (has.test("request_text"))     { first = comma(sb, first); appendStr(sb,  "request_text",     decodeForDisplay(requestBytes, maxBody, false)); }
         if (has.test("response_text"))    { first = comma(sb, first); appendStr(sb,  "response_text",    decodeForDisplay(responseBytes, maxBody, true)); }
+        if (has.test("request_headers"))  { first = comma(sb, first); appendStr(sb,  "request_headers",  extractRequestHeaders()); }
         if (has.test("response_headers")) { first = comma(sb, first); appendStr(sb,  "response_headers", extractResponseHeaders()); }
         // mcp_tag: only emitted when non-null (i.e. request was sent by Claude)
         if (mcpTag != null && has.test("mcp_tag")) { first = comma(sb, first); appendStr(sb, "mcp_tag", mcpTag); }
@@ -288,7 +289,15 @@ public class TrafficItem {
     private static String truncateBody(String body, int maxBody) {
         if (maxBody <= 0 || body.length() <= maxBody) return body;
         return body.substring(0, maxBody)
-                + "\n[... " + (body.length() - maxBody) + " chars omitted — use ?max_body=0 for full body]";
+                + "\n[body truncated at " + maxBody + " chars — total: " + body.length() + "]";
+    }
+
+    /** Extract only the request headers (everything before \\r\\n\\r\\n). */
+    private String extractRequestHeaders() {
+        if (requestBytes == null || requestBytes.length == 0) return "";
+        int sep = findBodySep(requestBytes);
+        if (sep < 0) return new String(requestBytes, StandardCharsets.ISO_8859_1);
+        return new String(Arrays.copyOfRange(requestBytes, 0, sep), StandardCharsets.ISO_8859_1);
     }
 
     /** Extract only the response headers (everything before \\r\\n\\r\\n). */

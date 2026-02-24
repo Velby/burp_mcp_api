@@ -161,6 +161,7 @@ FIELDS REFERENCE
   response         string  — base64-encoded raw response
   request_text     string  — decoded request (headers always full; body truncated at max_body)
   response_text    string  — decoded response (headers always full; body truncated at max_body)
+  request_headers  string  — request status line + headers only (no body)
   response_headers string  — response status line + headers only (no body)
   mcp_tag       string  — present only on Claude-initiated requests (e.g. "repeat:42", "request")
 """;

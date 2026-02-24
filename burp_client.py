@@ -166,7 +166,7 @@ class BurpClient:
         Use max_body=0 for the complete response body.
         """
         return self._get(f"/proxy/history/{item_id}", {
-            "max_body": max_body if max_body > 0 else None,
+            "max_body": max_body,  # 0 = unlimited; must be sent explicitly (server default is 1000)
         })
 
     def repeater_history(
@@ -194,7 +194,7 @@ class BurpClient:
         Returns request_text and response_text (body truncated to max_body chars).
         """
         return self._get("/repeater/latest", {
-            "max_body": max_body if max_body > 0 else None,
+            "max_body": max_body,  # 0 = unlimited; must be sent explicitly (server default is 3000)
         })
 
     def send_to_repeater(
@@ -270,7 +270,7 @@ class BurpClient:
         resp_body = resp.text
         if max_response_body > 0 and len(resp_body) > max_response_body:
             resp_body = (resp_body[:max_response_body]
-                         + f"\n[... {len(resp_body) - max_response_body} chars omitted]")
+                         + f"\n[body truncated at {max_response_body} chars — total: {len(resp_body)}]")
         return {
             "status_code": resp.status_code,
             "headers": dict(resp.headers),

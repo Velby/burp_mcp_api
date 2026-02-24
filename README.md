@@ -32,8 +32,9 @@ step-by-step instructions for building the JAR and loading it in Burp Suite.
 |---|---|
 | `burp_health` | Check the extension is running |
 | `burp_hosts` | List all captured hostnames |
-| `burp_search` | Search history by host, method, status, text, MIME type, tool, ... |
-| `burp_get_item` | Fetch full decoded request + response for one item |
+| `burp_search` | Search history by host, method, status, text, MIME type, tool, ... Optionally include body snippets centered on the match. |
+| `burp_get_items` | Fetch structured request + response for one or more items. Large bodies are auto-dumped to `/tmp` with a preview. Use `json_path` to extract a sub-object from JSON responses without loading the full body. |
+| `burp_summarize_host` | Summarize the API surface for a host — unique endpoints (path-normalized, query-stripped), status distribution, auth schemes, content types. Paginates smartly so high-volume endpoints don't crowd out rarer ones. |
 | `burp_repeater_latest` | Get the last request sent from Repeater |
 | `burp_send_to_repeater` | Send a captured request to a Repeater tab |
 | `burp_repeat` | Re-send a captured request with optional string replacements / header overrides |

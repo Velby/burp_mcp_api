@@ -24,7 +24,7 @@ setup.sh            One-shot setup: installs fastmcp, registers MCP, prints Burp
 ```bash
 cd extension
 ./gradlew jar           # output: build/libs/burp-rest-bridge.jar
-# If no system Java: JAVA_HOME=/snap/datagrip/256/jbr ./gradlew jar
+# If no system Java: JAVA_HOME=~/BurpSuitePro/jre ./gradlew jar
 ```
 
 To reload in Burp after rebuilding: Ctrl+click the Loaded checkbox next to the extension.
@@ -53,13 +53,33 @@ method=POST            mime=json                      limit=100  offset=0
 status=4               tool=PROXY|REPEATER|...        fields=url,status_code
 search=<text>          search_in=request_headers,response_body
 max_body=0             (0 = unlimited, applies to body only)
+fields=request_headers (request headers only, no body — useful for aggregation)
+fields=response_headers (response headers only, no body)
 ```
 
 ## MCP tools (via burp_mcp.py)
 
-`burp_health` · `burp_hosts` · `burp_search` · `burp_get_item` ·
+`burp_health` · `burp_hosts` · `burp_search` · `burp_get_item` · `burp_get_items` ·
 `burp_repeater_latest` · `burp_send_to_repeater` · `burp_scope` ·
-`burp_repeat` · `burp_request`
+`burp_repeat` · `burp_request` · `burp_summarize_host`
+
+### Structured response format
+`burp_get_item`, `burp_get_items`, `burp_repeater_latest` all return:
+```json
+{
+  "request": {"method": "POST", "url": "...", "headers": {...}, "body": {...}},
+  "response": {"status": 200, "headers": {...}, "body": {...}}
+}
+```
+- Headers are dicts (not raw text). Request headers filter out browser boilerplate (User-Agent, Accept-Encoding, Sec-Fetch-*, etc.)
+- Body is auto-parsed as JSON when Content-Type is application/json
+- Use `dump_response_body=True` on `burp_get_item` / `burp_repeat` / `burp_request` to write large bodies to `/tmp/burp_response_*.txt` for bash processing instead of inline context
+
+### burp_summarize_host
+Aggregates proxy traffic for a host into: unique endpoints (method × path), status code distribution, auth schemes seen, response content types. Good first tool when investigating a target.
+
+### burp_get_items
+Batch fetch multiple items by ID in one call. Avoids 6+ round trips when you already know which items to inspect.
 
 ### burp_repeat
 Fetches a captured request by ID, applies string replacements to the raw request text,
