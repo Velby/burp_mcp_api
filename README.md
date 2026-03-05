@@ -38,8 +38,8 @@ step-by-step instructions for building the JAR and loading it in Burp Suite.
 | `burp_summarize_host` | Summarize the API surface for a host — unique endpoints (path-normalized, query-stripped), status distribution, auth schemes, content types. Paginates smartly so high-volume endpoints don't crowd out rarer ones. |
 | `burp_repeater_latest` | Get the last request sent from Repeater |
 | `burp_send_to_repeater` | Send a captured request to a Repeater tab |
-| `burp_repeat` | Re-send a captured request with optional string replacements / header overrides |
-| `burp_request` | Send a fully custom HTTP request through Burp's proxy |
+| `burp_repeat` | Re-send a captured request with optional string replacements / header overrides / file upload |
+| `burp_request` | Send a fully custom HTTP request through Burp's proxy, with optional file upload |
 | `burp_scope` | Check if a URL is in Burp's target scope |
 
 ## CLI usage

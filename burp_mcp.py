@@ -792,6 +792,8 @@ def burp_repeat(
     proxy_port: int = 8080,
     max_response_body: int = 4000,
     dump_response_body: bool = False,
+    file_placeholder: str = None,
+    file_name: str = None,
 ) -> dict:
     """
     Fetch a captured request by ID, optionally modify it, and resend it through Burp's proxy.
@@ -809,14 +811,26 @@ def burp_repeat(
         max_response_body: Truncate response body to N chars (0 = unlimited)
         dump_response_body: Write the full response body to /tmp/burp_response_{item_id}.txt
                           instead of returning it inline. max_response_body is ignored.
+        file_placeholder: A unique string in the request body that will be replaced with raw
+                          file bytes before the request is sent. Can be any string that won't
+                          appear naturally in the body, e.g. "__FILE_CONTENT__".
+                          Python does the substitution — binary content never passes through
+                          the agent. Must be set together with file_name.
+        file_name:        Name of a file in /tmp/uploads/ to inject at the placeholder position.
+                          Only files in /tmp/uploads/ are accessible (path traversal is blocked).
+                          Stage the file there before calling this tool.
+                          Must be set together with file_placeholder.
 
     Returns: {status_code, headers, body, url, method, item_id}
     SSL verification is disabled (standard for security testing).
     """
+    if (file_placeholder is None) != (file_name is None):
+        return {"error": "file_placeholder and file_name must be set together"}
     result = _safe(lambda: _client.repeat(
         item_id, replacements=replacements, add_headers=add_headers,
         body=body, proxy_port=proxy_port,
         max_response_body=0 if dump_response_body else max_response_body,
+        file_placeholder=file_placeholder, file_name=file_name,
     ))
     if dump_response_body and isinstance(result, dict) and "error" not in result:
         _dump_body_from_result(result, f"/tmp/burp_response_{item_id}.txt")
@@ -832,6 +846,8 @@ def burp_request(
     proxy_port: int = 8080,
     max_response_body: int = 4000,
     dump_response_body: bool = False,
+    file_placeholder: str = None,
+    file_name: str = None,
 ) -> dict:
     """
     Send a custom HTTP request through Burp's proxy.
@@ -846,13 +862,25 @@ def burp_request(
         max_response_body: Truncate response body to N chars (0 = unlimited)
         dump_response_body: Write the full response body to /tmp/burp_response_latest.txt
                           instead of returning it inline. max_response_body is ignored.
+        file_placeholder: A unique string in the body that will be replaced with raw file bytes
+                          before the request is sent. Can be any string that won't appear
+                          naturally in the body, e.g. "__FILE_CONTENT__".
+                          Python does the substitution — binary content never passes through
+                          the agent. Must be set together with file_name.
+        file_name:        Name of a file in /tmp/uploads/ to inject at the placeholder position.
+                          Only files in /tmp/uploads/ are accessible (path traversal is blocked).
+                          Stage the file there before calling this tool.
+                          Must be set together with file_placeholder.
 
     Returns: {status_code, headers, body, url, method}
     """
+    if (file_placeholder is None) != (file_name is None):
+        return {"error": "file_placeholder and file_name must be set together"}
     result = _safe(lambda: _client.request(
         method, url, headers=headers, body=body,
         proxy_port=proxy_port,
         max_response_body=0 if dump_response_body else max_response_body,
+        file_placeholder=file_placeholder, file_name=file_name,
     ))
     if dump_response_body and isinstance(result, dict) and "error" not in result:
         _dump_body_from_result(result, "/tmp/burp_response_latest.txt")

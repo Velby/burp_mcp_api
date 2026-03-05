@@ -260,6 +260,8 @@ class BurpClient:
         body: Optional[str] = None,
         proxy_port: int = 8080,
         max_response_body: int = 4000,
+        file_placeholder: Optional[str] = None,
+        file_name: Optional[str] = None,
     ) -> dict:
         """
         Send an HTTP request through Burp's proxy.
@@ -282,6 +284,11 @@ class BurpClient:
         send_headers = dict(headers or {})
         if "X-Burp-MCP" not in send_headers:
             send_headers["X-Burp-MCP"] = "request"
+        # MCP tool parameters pass \r\n as literal chars — decode into real CRLF/LF
+        if isinstance(body, str):
+            body = body.replace('\\r\\n', '\r\n').replace('\\r', '\r').replace('\\n', '\n')
+        if file_placeholder is not None:
+            body = _apply_file_placeholder(body or "", file_placeholder, file_name)
         resp = req_lib.request(
             method=method.upper(),
             url=url,
@@ -311,6 +318,8 @@ class BurpClient:
         body: Optional[str] = None,
         proxy_port: int = 8080,
         max_response_body: int = 4000,
+        file_placeholder: Optional[str] = None,
+        file_name: Optional[str] = None,
     ) -> dict:
         """
         Fetch a captured request by ID, optionally modify it, and resend through Burp's proxy.
@@ -356,7 +365,8 @@ class BurpClient:
         headers["X-Burp-MCP"] = f"repeat:{item_id}"
 
         result = self.request(method, url, headers=headers, body=req_body or None,
-                              proxy_port=proxy_port, max_response_body=max_response_body)
+                              proxy_port=proxy_port, max_response_body=max_response_body,
+                              file_placeholder=file_placeholder, file_name=file_name)
         result["item_id"] = item_id
         return result
 
@@ -374,6 +384,24 @@ class BurpClient:
             item_id = item.get("id", "")
             ts = (item.get("timestamp") or "")[:19]
             print(f"[{item_id:>6}] {ts}  {tool:<10}  {status}  {method:<7}  {url}")
+
+
+def _apply_file_placeholder(body: "str | bytes", placeholder: str, file_name: str) -> bytes:
+    """
+    Replace placeholder in body with contents of /tmp/uploads/{file_name}.
+    The file_name component is sanitized to prevent path traversal.
+    Returns bytes suitable for use as a request body.
+    """
+    upload_path = Path("/tmp/uploads") / Path(file_name).name
+    try:
+        file_bytes = upload_path.read_bytes()
+    except OSError as e:
+        raise RuntimeError(f"cannot read /tmp/uploads/{file_name!r}: {e}")
+    body_bytes = body.encode("utf-8") if isinstance(body, str) else body
+    placeholder_bytes = placeholder.encode("utf-8")
+    if placeholder_bytes not in body_bytes:
+        raise RuntimeError(f"placeholder {placeholder!r} not found in request body")
+    return body_bytes.replace(placeholder_bytes, file_bytes, 1)
 
 
 def _parse_http_request(text: str) -> tuple[str, str, dict, str]:
